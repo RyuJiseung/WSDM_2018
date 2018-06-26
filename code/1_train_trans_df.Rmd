@@ -1,0 +1,259 @@
+---
+title: 'transaction_pretreatment - KKBox EDA'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+## Load libraries and helper functions
+```{r, message = FALSE}
+# general visualisation
+library(needs)
+needs(tidyverse,scales,grid,gridExtra,RColorBrewer,corrplot,readr,
+        data.table,tibble,tidyr,stringr,forcats,lubridate,ggforce,ggridges)
+```
+
+## Load data
+```{r warning=FALSE, results=FALSE}
+trans <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/transactions.csv')
+trans_v2 <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/transactions_v2.csv')
+trans <- bind_rows(trans,trans_v2)
+rm(trans_v2);gc()
+```
+
+## payment_plan_days imputation
+```{r}
+temp <- trans %>% select(actual_amount_paid, payment_plan_days)
+
+
+temp <- temp %>% arrange(actual_amount_paid,payment_plan_days) %>% 
+                  subset(actual_amount_paid!=0 & payment_plan_days!=0 ) %>% 
+                  subset(actual_amount_paid>=35)
+
+temp <- temp %>% group_by(actual_amount_paid) %>% 
+            summarise(payment_plan_days=as.integer(median(payment_plan_days)))
+
+trans_1 <- trans %>% subset(payment_plan_days==0) %>% select(-payment_plan_days)
+
+trans_1 <- trans_1 %>% left_join(temp)
+
+trans_1$payment_plan_days <- trans_1 %>% with(ifelse(is.na(payment_plan_days),
+                                                     as.integer(actual_amount_paid/5),
+                                                     payment_plan_days))
+temp11 <- trans %>% subset(payment_plan_days!=0)
+
+trans <- bind_rows(trans_1,temp11)
+```
+
+## New variables
+
+### 1. event여부(is_event)
+```{r}
+trans_1 <- trans
+trans_1$index <- 1:nrow(trans_1)
+temp <- trans_1 %>% group_by(msno) %>% summarise(index=min(index))
+temp <- trans[temp$index,]
+temp$is_event <- ifelse(temp$actual_amount_paid == 0, 1, 0)
+temp <- temp %>% select(msno,is_event)
+col_01 <- temp
+
+trans <- trans %>% left_join(col_01,by="msno")
+```
+
+## Reformating features
+```{r}
+trans <- trans %>%
+  mutate(pay_met = factor(payment_method_id),
+         pay_days = factor(payment_plan_days),
+         auto_renew = factor(is_auto_renew),
+         # is_cancel = factor(is_cancel),
+         trans_date = ymd(transaction_date),
+         exp_date = ymd(membership_expire_date))
+
+```
+
+## Load data
+```{r warning=FALSE, results=FALSE}
+train <- read_csv("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/train_scala_labeled.csv")
+
+
+members_df <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/members_v3.csv')
+
+date_list <- c(20160131,20160229,20160331,20160430,20160531,
+               20160630,20160731,20160831,20160930,20161031,
+               20161130,20161231,20170131)
+```
+
+```{r}
+for (i in 1:length(date_list)){
+table <- train %>% subset(date_list[i]==historyCutoff)
+
+table_201703 <- table %>% left_join(trans, by="msno")
+table_201703 <- table_201703 %>% subset(transaction_date>(date_list[i]-10000) &
+                                          transaction_date<=date_list[i])
+
+table_201703$trans_date<-as.Date(table_201703$trans_date)+30*(15-i)
+table_201703$exp_date<-as.Date(table_201703$exp_date)+30*(15-i)
+table_201703$membership_expire_date<-gsub("-","",as.character(table_201703$exp_date))
+
+temp <- table_201703 %>% select(msno,is_churn) %>% distinct()
+col_01 <- temp
+
+temp <- table_201703 %>%subset(payment_plan_days==30) %>%
+                  group_by(msno) %>%
+                  summarise(pay_30days = n())
+col_02<-temp
+
+temp <- table_201703 %>% 
+              subset(payment_plan_days==7) %>%
+              group_by(msno) %>%
+              summarise(pay_7days = n())
+col_03<-temp
+
+temp <- table_201703 %>% select(msno, membership_expire_date, payment_plan_days)
+temp$exp_year <- substr(temp$membership_expire_date,1,4)
+ 
+temp <- temp %>%
+  group_by(msno,exp_year) %>%
+  summarise(sum_days=sum(payment_plan_days))
+
+temp <- temp %>% dcast(msno~exp_year,value.var="sum_days")
+temp <- temp %>% select(msno,`2015`,`2016`,`2017`)
+colnames(temp) <- c("msno","payday_sum_2015","payday_sum_2016","payday_sum_2017")
+col_04 <- temp
+
+temp <-table_201703 %>%
+          group_by(msno) %>%
+          summarise(avg_auto_renew = mean(is_auto_renew))
+col_05<-temp
+
+temp <- table_201703 %>% group_by(msno) %>% summarise(is_cancel=sum(is_cancel))
+temp$is_cancel<-ifelse(temp$is_cancel>0,1,0)
+col_06<-temp
+
+temp <- table_201703 %>% group_by(msno) %>% summarise(trans_cnt=n())
+col_07<-temp
+
+temp <- table_201703 %>% group_by(msno) %>% summarise(fst_exp_date=min(exp_date),
+                                               lst_exp_date=max(exp_date),
+                                               dur_sub=lst_exp_date-fst_exp_date,
+                                               sum_paydays = sum(payment_plan_days))
+
+temp <- temp %>% mutate(per_10_pay_days=sum_paydays*0.3)
+temp$is_continuous<-with(temp, ifelse(sum_paydays>60 & abs(dur_sub-sum_paydays)<per_10_pay_days,1,0))
+temp <- temp %>% select(msno,fst_exp_date,lst_exp_date,sum_paydays,is_continuous)
+col_08<-temp
+
+temp <- table_201703 %>% select(msno,is_cancel)
+temp1 <- temp
+temp <- rbind(temp,c(0,0))
+temp1 <- rbind(c(0,0),temp1)
+temp <- cbind(temp,temp1)
+temp <- temp[temp[,1]==temp[,3],]
+colnames(temp)<-c("msno_1","lst_is_cancel","msno_2","ago_is_cancel")
+temp <- temp %>% select(msno_1,lst_is_cancel,ago_is_cancel)
+colnames(temp)<-c("msno","lst_is_cancel","ago_is_cancel")
+temp$cancel_0_to_1 <- ifelse(temp$lst_is_cancel > temp$ago_is_cancel,1,0)
+temp$cancel_1_to_0 <- ifelse(temp$lst_is_cancel < temp$ago_is_cancel,1,0)
+
+temp <- temp %>% group_by(msno) %>% 
+                  summarise(cancel_0_to_1_cnt=sum(cancel_0_to_1),
+                            cancel_1_to_0_cnt=sum(cancel_1_to_0))
+col_09<-temp
+
+temp <- table_201703 %>% group_by(msno) %>% summarise(max_exp_date=max(membership_expire_date))
+temp$last_exp_month <- ifelse(str_sub(temp$max_exp_date,1,6)=="201703",3,
+                            ifelse(str_sub(temp$max_exp_date,1,6)=="201702",2,
+                                   ifelse(str_sub(temp$max_exp_date,1,6)=="201701",1,0)))
+temp <- temp %>% select(msno,last_exp_month)
+col_10<-temp
+
+temp <- table_201703 %>%
+  group_by(msno) %>%
+  summarise(unique_pay_method_cnt = n_distinct(payment_method_id))
+col_11 <- temp
+
+temp <- table_201703 %>% group_by(msno,payment_method_id) %>% summarise(cnt=n())
+temp1 <- temp %>% group_by(msno) %>% summarise(max_cnt=max(cnt)) 
+temp <- temp %>% inner_join(temp1)
+temp <- temp %>% subset(cnt == max_cnt)
+temp <- temp %>% select(msno,payment_method_id)
+temp <- temp %>% group_by(msno) %>% summarise(max_pay_method = max(payment_method_id))
+col_12 <- temp
+
+table_201703 <- table_201703 %>% mutate( diff_trans_exp  = abs(trans_date + payment_plan_days - exp_date) )
+table_201703_1 <- table_201703 %>% subset(is_cancel==0)
+table_201703_1$diff_trans_exp <- as.numeric(table_201703_1$diff_trans_exp)
+temp <- table_201703_1 %>% group_by(msno) %>% summarise(mean_diff_trans_exp = mean(diff_trans_exp))
+col_13 <- temp
+
+temp <- table_201703 %>% select(msno,actual_amount_paid, payment_plan_days)
+temp <- temp %>% mutate(amt_per_day = actual_amount_paid / payment_plan_days)
+temp <- temp %>% group_by(msno) %>% summarise(amt_per_day = mean(amt_per_day))
+temp <- temp %>% select(msno, amt_per_day)
+col_14 <- temp
+
+temp <- col_01 %>% full_join(col_02) %>% full_join(col_03) %>% 
+  full_join(col_04) %>% full_join(col_05)%>% full_join(col_06) %>% 
+  full_join(col_07) %>% full_join(col_08) %>% full_join(col_09) %>% 
+  full_join(col_10) %>% full_join(col_11) %>% full_join(col_12) %>% 
+  full_join(col_13) %>% full_join(col_14)
+temp$payday_sum_2015<-ifelse(is.na(temp$payday_sum_2015),0,temp$payday_sum_2015)
+temp$payday_sum_2016<-ifelse(is.na(temp$payday_sum_2016),0,temp$payday_sum_2016)
+temp$payday_sum_2017<-ifelse(is.na(temp$payday_sum_2017),0,temp$payday_sum_2017)
+temp$cancel_0_to_1_cnt<-ifelse(is.na(temp$cancel_0_to_1_cnt),0,temp$cancel_0_to_1_cnt)
+temp$cancel_1_to_0_cnt<-ifelse(is.na(temp$cancel_1_to_0_cnt),0,temp$cancel_1_to_0_cnt)
+temp$pay_30days<-ifelse(is.na(temp$pay_30days),0,temp$pay_30days)
+temp$pay_7days<-ifelse(is.na(temp$pay_7days),0,temp$pay_7days)
+temp$mean_diff_trans_exp<-ifelse(is.na(temp$mean_diff_trans_exp),0,temp$mean_diff_trans_exp)
+temp$amt_per_day<-ifelse(is.na(temp$amt_per_day),0,temp$amt_per_day)
+temp[is.na(temp)]=0
+
+temp <- temp %>% left_join(members_df, by="msno")
+
+train_df <- temp
+
+train_df$fst_exp_date <- as.numeric(gsub("-","",train_df$fst_exp_date))
+train_df$lst_exp_date <- as.numeric(gsub("-","",train_df$lst_exp_date))
+train_df$gender <- ifelse(train_df$gender == "female" ,1, 0)
+
+train_df$is_churn <- as.factor(train_df$is_churn)
+
+train_df$gender <- train_df %>% with(ifelse(is.na(gender),1.5,
+                                            ifelse(gender=="female",1,0)))
+
+train_df$bd <- train_df %>% with(ifelse(bd >10 & bd < 100, bd, 28)) #28 is median(bd)
+
+train_df[is.na(train_df)]<-0
+
+
+write.csv(train_df,
+        paste0("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/table_",
+       as.numeric(substr(date_list[i],1,6))+1,".csv"), row.names = FALSE)}
+```
+
+```{r}
+date_list <- c(201602,201603,201604,201605,201606,
+               201607,201608,201609,201610,201611,
+               201612,201613,201702)
+```
+
+```{r}
+total<-c()
+for (i in 1:length(date_list)){
+temp <- read_csv(paste0("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/table_",
+       as.numeric(date_list[i]),".csv"))
+total <- total %>% bind_rows(temp)
+}
+
+write.csv(total,"table_train_df_201602_201703.csv",row.names=FALSE)
+```
+

@@ -1,0 +1,143 @@
+
+---
+title: 'Modeling - KKBox EDA'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+https://github.com/h2oai/h2o-tutorials/blob/master/h2o-open-tour-2016/chicago/grid-search-model-selection.R
+
+https://github.com/h2oai/h2o-3/blob/master/h2o-docs/src/product/tutorials/random%20hyperparmeter%20search%20and%20roadmap.md
+
+## Load libraries and helper functions
+```{r, message = FALSE}
+# general visualisation
+library(needs)
+needs(dplyr,readr,h2o)
+```
+
+
+
+## Load data
+```{r warning=FALSE, results=FALSE}
+train_df <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_train_df_201602_201703.csv')
+test_df <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_test_df_201704.csv')
+
+train_df$is_churn <- as.factor(train_df$is_churn)
+test_df$is_churn <- as.factor(test_df$is_churn)
+```
+
+
+## 셋 구분
+```{r}
+# seed <- 1
+# set.seed(seed)
+# idx <- sample(1:nrow(train_df), size = nrow(train_df)*0.3)
+# # 훈련 데이터
+# train <- as.data.frame(train_df[idx,])
+# train$is_churn<-as.factor(train$is_churn)
+
+train_df <- train_df[sample(1:nrow(train_df),nrow(train_df)*0.3),-1]
+
+test_df <- test_df[,-1]
+
+# 테스트 데이터
+# val <- as.data.frame(train_df[!1:nrow(train_df) %in% idx,])
+# val$is_churn<-as.factor(val$is_churn)
+```
+
+
+## H2O 클러스터
+```{r}
+h2o.init(nthreads =- -1, max_mem_size = '64G')
+train_df$is_churn<-as.factor(train_df$is_churn)
+train_Hex<-as.h2o(train_df)
+
+# val$is_churn<-as.factor(val$is_churn)
+# val_Hex<-as.h2o(val)
+
+test_df$is_churn <- c(rep(1,(nrow(test_df)+1)/2),rep(0,(nrow(test_df)-1)/2))
+test_df$is_churn <- as.factor(test_df$is_churn)
+test_Hex<-as.h2o(test_df)
+```
+
+## Modeling
+```{r}
+predictors <- setdiff(names(test_df),
+                       c("is_churn", "msno"))
+response <- "is_churn"
+```
+
+## gbm
+```{r}
+gbm <- h2o.gbm(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      # validation_frame = val_Hex,
+                      nfolds=3,
+                      ntree=200,
+                      seed=950902)
+
+pred_gbm <- h2o.predict(gbm,test_Hex)
+
+test_df$gbm <- as.vector(pred_gbm$p1)
+
+temp <- test_df %>% select(msno,gbm)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/gbm_only_201604.csv",row.names=FALSE)
+
+gbm@model$variable_importances[1:20,]
+```
+
+## rf
+```{r}
+rf <- h2o.randomForest(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      # validation_frame = val_Hex,
+                      ntree=200,
+                      nfolds=3,
+                      seed=950902)
+
+
+pred_rf <- h2o.predict(rf,test_Hex)
+
+test_df$rf <- as.vector(pred_rf$p1)
+
+temp <- test_df %>% select(msno,rf)
+colnames(temp) <- c("msno","is_churn")
+write.csv(temp,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/rf_only_201604.csv",row.names=FALSE)
+
+rf@model$variable_importances[1:20,]
+```
+
+```{r}
+temp <- test_df %>% select(msno, gbm, rf)
+temp$is_churn <- temp %>% with((gbm + rf)/2)
+temp <- temp %>% select(msno, is_churn)
+write.csv(temp,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/total_only_201604.csv",row.names=FALSE)
+```
+
+```{r}
+temp <- test_df %>% select(msno, gbm, rf)
+temp$is_churn <- temp %>% with((gbm*rf)^(1/2))
+temp <- temp %>% select(msno, is_churn)
+write.csv(temp,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/Geo_total_only_201604.csv",row.names=FALSE)
+```
+
+
+```{r}
+temp <- test_df %>% select(msno, gbm, rf)
+temp$is_churn <- temp %>% with(2/(1/gbm+1/rf))
+temp <- temp %>% select(msno, is_churn)
+write.csv(temp,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/harmonic_total_only_201604.csv",row.names=FALSE)
+```

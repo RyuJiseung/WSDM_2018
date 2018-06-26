@@ -1,0 +1,109 @@
+---
+title: 'Should I stay or should I go? - KKBox EDA'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+## Load libraries and helper functions
+```{r, message = FALSE}
+# general visualisation
+library(needs)
+needs(tidyverse,scales,grid,gridExtra,RColorBrewer,corrplot,readr,
+        data.table,tibble,tidyr,stringr,forcats,lubridate,ggforce,ggridges)
+```
+
+```{r}
+date_list <- c(201602,201603,201604,201605,201606,
+               201607,201608,201609,201610,201611,
+               201612,201613,201702,201704)
+date_list1 <- c(201601,201602,201603,201604,201605,
+               201606,201607,201608,201609,201610,
+               201611,201612,201701,201703)
+```
+
+## Load data
+```{r warning=FALSE, results=FALSE}
+user_log <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/user_logs.csv')
+user_log_v2 <- read_csv('D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/user_logs_v2.csv')
+user_log <- bind_rows(user_log,user_log_v2)
+rm(user_log_v2);gc()
+
+
+for (i in 1:length(date_list)){
+# logs <- read_csv(paste0("~/Desktop/r스터디(목)/6_kaggle_competition/data/user_logs_",as.numeric(date_list[i]),".csv"))
+logs <- user_log %>% subset(substr(user_log$date,1,6) == as.numeric(date_list1[i]))
+table <- read_csv(paste0("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/table_",as.numeric(date_list[i]),".csv"))
+
+temp <- table %>% select(msno, is_churn)
+logs <- temp %>% left_join(logs)
+logs_1 <- logs %>% arrange(msno,date,total_secs)
+logs_1 <- logs_1 %>% mutate(total_hours = round(total_secs/3600,2))
+logs_1 <- logs_1 %>% mutate(total_num = num_25+num_50+num_75+num_100+num_985)
+logs_1 <- logs_1 %>% mutate(rate_25 = round(num_25/total_num,2),rate_50 = round(num_50/total_num,2),
+                                    rate_75 = round(num_75/total_num,2),rate_100 = round(num_100/total_num,2),
+                                    rate_985 = round(num_985/total_num,2))
+
+
+logs_1$day <- logs_1$date %>% substr(7,8) %>% as.numeric()
+
+# 변수1) 회원별 방문빈도 (median)
+logs_add <- logs_1 %>% group_by(msno) %>% mutate (lg = lag(date,1)) # 순서 뒤로
+
+logs_add$date_lag_new <- logs_add %>% with(ifelse(is.na(lg),date,lg)) #lag의 na값 보정
+logs_add <- logs_add %>% select(-lg)
+logs_add_1 <- logs_add %>% group_by(msno) %>% summarise(median_visit_days = median(date-date_lag_new))
+
+log_2 <- logs_1 %>% group_by(msno) %>% summarise(sum_weight_logs_day=sum(day),
+                                            lst_day=max(day),
+                                            log_count = n(), 
+                                            mean_num_25 = mean(num_25),
+                                            mean_num_50 = mean(num_50),
+                                            mean_num_75 = mean(num_75),
+                                            mean_num_985 = mean(num_985),
+                                            mean_num_100 = mean(num_100),
+                                            mean_total_secs = mean(total_secs),
+                                            mean_rate_25 = mean(rate_25),
+                                            mean_rate_50 = mean(rate_50),
+                                            mean_rate_75 = mean(rate_75),
+                                            mean_rate_985 = mean(rate_985),
+                                            mean_rate_100 = mean(rate_100))
+
+log_2 <- log_2 %>% full_join(logs_add_1,by="msno")
+
+log_2[is.na(log_2)]<-0
+
+log_2 <- log_2 %>% full_join(table,by="msno")
+write.csv(log_2, file = paste0("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_",date_list[i],".csv"))}
+```
+
+
+```{r}
+date_list <- c(201602,201603,201604,201605,201606,
+               201607,201608,201609,201610,201611,
+               201612,201613,201702)
+```
+
+```{r}
+total<-c()
+for (i in 1:length(date_list)){
+temp <- read_csv(paste0("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_",
+       as.numeric(date_list[i]),".csv"))
+total <- total %>% bind_rows(temp)
+}
+
+write.csv(total,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_train_df_201602_201703.csv",row.names=FALSE)
+```
+
+```{r}
+test<-read_csv("D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_201704.csv")
+write.csv(test,"D:/자료실/내 문서/OneDrive - 이화여자대학교/jiseung1216/머신러닝/프로젝트/캐글/wsdm/data/logs_test_df_201704.csv",row.names=FALSE)
+```
